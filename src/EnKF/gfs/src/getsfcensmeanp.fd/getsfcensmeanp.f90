@@ -44,11 +44,12 @@ program getsfcensmeanp
   type(Dataset) :: dset,dseto
   type(Dimension) :: londim,latdim,levdim
   real(4), allocatable, dimension(:,:) :: values_2d, values_2d_avg
-  real(4), allocatable, dimension(:,:,:):: values_3d, values_3d_avg
+  real(4), allocatable, dimension(:,:,:) :: values_3d, values_3d_avg
+  integer, allocatable, dimension(:,:) :: local_count, global_count
 
   character*500 filenamein,filenameout,datapath,fileprefix
   character*3 charnanal
-  integer lunin,lunout,iret,nanals,k
+  integer lunin,lunout,iret,nanals,i,j,k
   integer mype,mype1,npe,orig_group, new_group, new_comm
   integer nrec, lonb, latb, levs, n, npts, nvar
   integer,dimension(7):: idate
@@ -312,6 +313,8 @@ program getsfcensmeanp
         levdim = get_dim(dset,'pfull');   levs = levdim%len
         allocate(values_2d_avg(lonb,latb))
         allocate(values_3d_avg(lonb,latb,levs))
+        allocate(local_count(lonb,latb))
+        allocate(global_count(lonb,latb))
         if (mype == 0) then
            dseto = create_dataset(filenameout, dset, copy_vardata=.true.)
            print *,'opened netcdf file ',trim(filenameout)
@@ -334,7 +337,29 @@ program getsfcensmeanp
            if (dset%variables(nvar)%ndims == 3) then
               call read_vardata(dset,trim(dset%variables(nvar)%name),values_2d)
               call mpi_allreduce(values_2d,values_2d_avg,lonb*latb,mpi_real4,mpi_sum,new_comm,iret)
-              values_2d_avg = values_2d_avg * rnanals
+              if ( dset%variables(nvar)%name .eq. 'snowt1' .or. &
+                   dset%variables(nvar)%name .eq. 'snowt2' .or. &
+                   dset%variables(nvar)%name .eq. 'snowt3' ) then
+                 do j = 1, latb
+                    do i = 1, lonb
+                       if (values_2d(i,j) /= 0.0) then
+                          local_count(i,j) = 1
+                       else
+                          local_count(i,j) = 0
+                       end if
+                    end do
+                 end do
+                 call mpi_allreduce(local_count,global_count,lonb*latb,mpi_integer,mpi_sum,new_comm,iret)
+                 do j = 1, latb
+                    do i = 1, lonb
+                       if (global_count(i,j) > 0) then
+                          values_2d_avg(i,j) = values_2d_avg(i,j) / real(global_count(i,j), kind=4)
+                       end if
+                    end do
+                 end do
+              else
+                 values_2d_avg = values_2d_avg * rnanals
+              end if
               if (mype == 0) then
                  print *,'writing ens mean ',trim(dset%variables(nvar)%name)
                  call write_vardata(dseto,trim(dset%variables(nvar)%name),values_2d_avg,&
